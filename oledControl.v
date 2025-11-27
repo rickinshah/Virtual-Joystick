@@ -48,7 +48,7 @@ module oledControl(
     wire [63:0] charBitMap;
     reg [7:0] columnAddr;
     reg [3:0] byteCounter;
-
+    reg updatePending;
     
     
     localparam IDLE = 'd0,
@@ -74,8 +74,23 @@ module oledControl(
                PAGE_ADDR1 = 'd20,
                PAGE_ADDR2 = 'd21,
                COLUMN_ADDR = 'd22,
-               SEND_DATA = 'd23;
-               
+               SEND_DATA = 'd23,
+               COLUMN_ADDR1 = 'd24,
+               SET_ADDR_MODE = 'd25,
+               SET_HORIZONTAL = 'd26,
+               COLUMN_ADDR2 = 'd27;
+    
+    always @(posedge clock)
+    begin
+        if(reset)
+            updatePending <= 1'b0;
+        else if(updateString == 1'b1)
+        begin
+            updatePending <= 1'b1;
+        end
+        else if(state == PAGE_ADDR && nextState == PAGE_ADDR1)
+            updatePending <= 1'b0;
+        end
     
     always @(posedge clock)
     begin
@@ -247,9 +262,32 @@ module oledControl(
                     begin
                         spiLoadData <= 1'b0;
                         state <= WAIT_SPI;
-                        nextState <= PAGE_ADDR; //FULL_DISPLAY;
+                        nextState <= SET_ADDR_MODE;
                     end
                 end
+                SET_ADDR_MODE: begin
+                    spiData <= 'h20;
+                    spiLoadData <= 1'b1;
+                    oled_dc_n <= 1'b0;
+                    if(spiDone)
+                    begin
+                        spiLoadData <= 1'b0;
+                        state <= WAIT_SPI;
+                        nextState <= SET_HORIZONTAL;
+                    end
+                end
+                
+                SET_HORIZONTAL: begin
+                    spiData <= 'h00;
+                    spiLoadData <= 1'b1;
+                    if(spiDone)
+                    begin
+                        spiLoadData <= 1'b0;
+                        state <= WAIT_SPI;
+                        nextState <= PAGE_ADDR;
+                    end
+                end
+                
                 PAGE_ADDR: begin
                     spiData <= 'h22;
                     spiLoadData <= 1'b1;
@@ -263,22 +301,20 @@ module oledControl(
                 end
                 
                 PAGE_ADDR1: begin
-                    spiData <= currPage; // start page address
+                    spiData <= 'h00; 
                     spiLoadData <= 1'b1;
-                    oled_dc_n <= 1'b0;
                     if(spiDone)
                     begin
                         spiLoadData <= 1'b0;
                         state <= WAIT_SPI;
-                        currPage <= currPage + 1;
+//                        currPage <= currPage + 1;
                         nextState <= PAGE_ADDR2;
                     end
                 end
                 
                 PAGE_ADDR2: begin
-                    spiData <= currPage; // start page address
+                    spiData <= 'h07;
                     spiLoadData <= 1'b1;
-                    oled_dc_n <= 1'b0;
                     if(spiDone)
                     begin
                         spiLoadData <= 1'b0;
@@ -288,7 +324,29 @@ module oledControl(
                 end
                 
                 COLUMN_ADDR: begin
-                    spiData <= 'h10; // start page address
+                    spiData <= 'h21;
+                    spiLoadData <= 1'b1;
+                    if(spiDone)
+                    begin
+                        spiLoadData <= 1'b0;
+                        state <= WAIT_SPI;
+                        nextState <= COLUMN_ADDR1;
+                    end
+                end
+                
+                COLUMN_ADDR1: begin
+                    spiData <= 'h00;
+                    spiLoadData <= 1'b1;
+                    if(spiDone)
+                    begin
+                        spiLoadData <= 1'b0;
+                        state <= WAIT_SPI;
+                        nextState <= COLUMN_ADDR2;
+                    end
+                end
+                
+                COLUMN_ADDR2: begin
+                    spiData <= 'h7f;
                     spiLoadData <= 1'b1;
                     if(spiDone)
                     begin
@@ -297,7 +355,6 @@ module oledControl(
                         nextState <= DONE;
                     end
                 end
-
 
 //                FULL_DISPLAY: begin
 //                    spiData <= 'hA5;
@@ -309,35 +366,24 @@ module oledControl(
 //                        nextState <= DONE;
 //                    end
 //                end
-                DONE: begin
-                    sendDone <= 1'b0;
-                    if (updateString) begin
-                        // Reset column/page address to redraw
-                        columnAddr <= 0;
-                        currPage   <= 0;
-                        state      <= PAGE_ADDR;   // go refresh display
-                        nextState  <= PAGE_ADDR;
+                    DONE: begin
+                        sendDone <= 1'b0;
+                        if (sendDataValid && !sendDone) begin
+                            state <= SEND_DATA;
+                            byteCounter <= 8;
+                        end
+                        else if (updatePending) begin
+                            state      <= PAGE_ADDR;
+                            nextState  <= PAGE_ADDR1;
+                        end
                     end
-                    
-                    if(sendDataValid & columnAddr != 128 & !sendDone)
-                    begin
-                        state <= SEND_DATA;
-                        byteCounter <= 8;
-                    end
-                    else if(sendDataValid & columnAddr == 128 & !sendDone)
-                    begin
-                        state <= PAGE_ADDR;
-                        columnAddr <= 0;
-                        byteCounter <= 8;
-                    end
-                end
-                SEND_DATA: begin
+                    SEND_DATA: begin
                     spiData <= charBitMap[(byteCounter*8-1)-:8];
                     spiLoadData <= 1'b1;
                     oled_dc_n <= 1'b1;
                     if(spiDone)
                     begin
-                        columnAddr <= columnAddr - 1;
+//                        columnAddr <= columnAddr - 1;
                         spiLoadData <= 1'b0;
                         state <= WAIT_SPI;
                         if(byteCounter != 1)
